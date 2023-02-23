@@ -1,4 +1,3 @@
-import requests
 import re
 import json
 import ast
@@ -6,20 +5,10 @@ import ast
 
 class ElasticQuery:
 
-    HEADERS = {
-        'Content-Type': 'application/json'
-    }
-
-    def __init__(self, url, index=None, _type=None, size=None):
-        self.url = url
-        self.index = index
-        self.type = _type
+    def __init__(self, size=None, fields=None):
         self.query = None
-        self.fields = []
-        self.query_size = size or 10  # Mirrors Elasticsearch's default
-        self.request = None
-        self.response = None
-        self.results = []
+        self.query_size = size or 10
+        self.fields = fields or []
 
     def _build_querystring_query(self, query_term):
         return {"query_string": {"query": query_term}}
@@ -63,13 +52,13 @@ class ElasticQuery:
 
     @staticmethod
     def map_operation(ast_op, query_op):
-        if ast_op == "and":
+        if ast_op.lower() == "and":
             if query_op == "~=":
                 return "must"
             elif query_op == "!~":
                 return "must_not"
             return "must"
-        if ast_op == "or":
+        if ast_op.lower() == "or":
             return "should"
 
     def resolve_ast(self, query_ast):
@@ -139,7 +128,8 @@ class ElasticQuery:
         patterns = [match_pattern, phrase_pattern]
 
         query_ast = ast.parse_into_ast(query_body, patterns)
-        resolved_query_ast = self.resolve_ast(query_ast)
+
+        resolved_query_ast = self.resolve_ast(query_ast) if query_ast else None
         return resolved_query_ast
 
     def _parse_query_expression(self, query_expression):
@@ -147,7 +137,7 @@ class ElasticQuery:
         Parses the expression into search and agg parts
 
         :param query_expression: Raw query expression from client code
-        :return: two element tuple containg the parsed search and agg queries
+        :return: two element tuple containing the parsed search and agg queries
         """
         search_expression, *agg_expression = re.split("\|", query_expression)
         # If the search expression is just a keyword build a querystring query
@@ -157,76 +147,27 @@ class ElasticQuery:
             return self._build_querystring_query(search_expression), {}
 
         search_query_parsed = self._parse_search_query_terms(query_expression)
-        agg_query_parsed = None  #TODO: placeholder
+        agg_query_parsed = None  # TODO: placeholder for call to process aggregations
 
         if search_query_parsed:
             return search_query_parsed, agg_query_parsed
-        raise Exception("Invalid Query: {}".format(query_expression))
+        raise QueryBuildException("Invalid Query: {}".format(query_expression))
 
-    def _build_query(self, query_expression):
-        search_query, agg_query = self._parse_query_expression(query_expression)
+    def build_query(self, query_expression):
+        try:
+            search_query, agg_query = self._parse_query_expression(query_expression)
+        except QueryBuildException:
+            # TODO: log
+            return None
         self.query = {"query": search_query, "size": self.query_size}
         if self.fields:
             self.query["_source"] = self.fields
         if agg_query:
             self.query["aggregations"] = agg_query
-
-    def search(self, query):
-        """ Searches """
-        try:
-            self._build_query(query)
-        except Exception as e:
-            print(e)
-            raise QueryBuildException(e)
-
-        search_url = "{}/{}/{}/_search".format(self.url, self.index, self.type)
-        self.response = requests.get(search_url,
-                                     data=json.dumps(self.query),
-                                     headers=ElasticQuery.HEADERS)
-        self._parse_response()
-
-    def _parse_response(self):
-        response = self.response.json()
-        #total_matches = response["hits"]["total"]
-        total_matches_returned = len(response["hits"]["hits"])
-        if total_matches_returned > 0:
-            results = response["hits"]["hits"]
-            for result in results:
-                _id = result["_id"]
-                doc = result["_source"]
-                if self.fields:  #TODO: validate submitted fields
-                    entry = dict([(field, doc[field]) for field in self.fields])
-                else:
-                    entry = doc
-                #TODO: provide option to use another field as id
-                entry["id"] = _id
-                self.results.append(entry)
-
-    def show_instance_info(self):
-        self.response = requests.get(self.url)
-        self.request = self.response.request
-        stats = self.response.json()
-        del stats["tagline"]
-        print(json.dumps(stats, indent=2))
+        return self.query
 
     def print_query(self):
         print(json.dumps(self.query, indent=2))
-
-    def print_response_summary(self, fields):
-        if self.response and len(fields) > 0:
-            res = self.response.json()
-            hit_count = res["hits"]["total"]
-            results = []
-            for result in res["hits"]["hits"]:
-                entry = []
-                for field in fields:
-                    entry.append(result["_source"][field])
-                results.append(",".join(entry))
-            print("{} Results".format(hit_count))
-            print("{}".format(json.dumps(results, indent=4)))
-
-    def print_results(self):
-        print("{}".format(json.dumps(self.results[0], indent=4)))
 
 
 class QueryBuildException(Exception):

@@ -14,7 +14,7 @@ def is_closed_paren(token):
 
 
 def is_operator(token):
-    return token in OPERATORS
+    return token in OPERATORS or token.lower() in OPERATORS
 
 
 def is_operand(token):
@@ -85,4 +85,4 @@ def parse_into_ast(expression, token_patterns):
         token = operator.pop()
         operand.append(evaluate({token: [term1, term2]}))
 
-    return json.loads(json.dumps(operand[0]))
+    return json.loads(json.dumps(operand.pop()))
